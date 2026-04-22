@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name         GeoFS Ultimate HUD (AoA Fix v10.3)
+// @name         GeoFS Ultimate HUD (Zero-Floor Fix v10.7)
 // @namespace    https://github.com/weixiaoSmile2026/geofs-sounds
-// @version      10.3
-// @description  修正地面 AoA 顯示、補全 APR MINI/MINI 音效、移除機場距離限制
-// @author       Gemini / User
+// @version      10.7
+// @description  強制負高度歸零、修正超速邏輯、全功能 GPWS
+// @author       User & Gemini AI
 // @match        https://www.geo-fs.com/geofs.php*
 // @grant        none
 // ==/UserScript==
@@ -11,9 +11,7 @@
 (function() {
     'use strict';
 
-    // ==========================================
-    // 1. 音效資源
-    // ==========================================
+    // [音效資源 - 保持不變]
     const RAW_BASE = "https://raw.githubusercontent.com/weixiaoSmile2026/geofs-sounds/main/";
     const SOUND_FILES = {
         "2500": "audio_2500.mp3", "1000": "audio_1000.mp3", "500": "audio_500.mp3",
@@ -32,28 +30,20 @@
 
     const audioCtx = {};
     let isMuted = false, callFlags = { v1: false, vr: false }, oldAltitude = 0, apWasOn = false;
-
-    Object.keys(SOUND_FILES).forEach(k => {
-        audioCtx[k] = new Audio(RAW_BASE + SOUND_FILES[k]);
-        if (["STALL", "OVERSPEED", "BANK_ANGLE", "SINK", "GEAR", "FLAPS", "PULL_UP"].includes(k)) audioCtx[k].loop = true;
-    });
-
+    Object.keys(SOUND_FILES).forEach(k => { audioCtx[k] = new Audio(RAW_BASE + SOUND_FILES[k]); if (["STALL", "OVERSPEED", "BANK_ANGLE", "SINK", "GEAR", "FLAPS", "PULL_UP"].includes(k)) audioCtx[k].loop = true; });
     function play(k) { if (!isMuted && audioCtx[k]?.paused) audioCtx[k].play().catch(()=>{}); }
     function stop(k) { if (audioCtx[k] && !audioCtx[k].paused) { audioCtx[k].pause(); audioCtx[k].currentTime = 0; } }
-
     const getV = () => window.geofs.animation.values || {};
     const getAC = () => window.geofs.aircraft.instance || {};
-    const groundAltitude = () => (getV().altitude || 0) - (getV().groundElevationFeet || 0) - 50;
 
     // ==========================================
-    // 2. UI 系統
+    // UI 介面
     // ==========================================
     let dataPanel, alertPanel;
     function initUI() {
         const css = `.h-panel { position: absolute; z-index: 10000; padding: 12px; background: rgba(0,0,0,0.85); color: #0F0; font-family: "Consolas", monospace; border: 1.5px solid #0F0; border-radius: 6px; cursor: move; min-width: 230px; }
                      .h-ctrl { position: absolute; z-index: 10001; padding: 10px; background: rgba(15,15,15,0.95); border: 2px solid #5AF; border-radius: 8px; cursor: move; width: 120px; top:25px; left:25px; display: flex; flex-direction: column; gap: 5px; }
                      .h-btn { background: #222; color: #5AF; border: 1px solid #5AF; padding: 5px; cursor: pointer; font-size: 11px; font-weight: bold; border-radius: 4px; text-align: center; }
-                     .v-speed { color: #5AF; font-weight: bold; }
                      .red-alert { background: #D00; color: #FFF; animation: blink 0.3s infinite; text-align:center; font-weight:bold; padding:5px; margin:3px 0; border-radius:4px; font-size:14px; }
                      @keyframes blink { 0%{opacity:1} 50%{opacity:0.4} 100%{opacity:1} }`;
         const s = document.createElement('style'); s.innerHTML = css; document.head.appendChild(s);
@@ -69,56 +59,64 @@
     }
 
     // ==========================================
-    // 3. 核心邏輯
+    // 核心循環
     // ==========================================
     function mainLoop() {
         if (!window.geofs?.animation?.values || window.geofs.isPaused()) return;
-        const v = getV(), ac = getAC(), alt = groundAltitude();
+        const v = getV(), ac = getAC();
+
+        // --- 高度處理 (防負值) ---
+        let rawAlt = (v.altitude || 0) - (v.groundElevationFeet || 0) - 50;
+        const alt = Math.max(0, rawAlt);
+        const realAlt = Math.max(0, v.altitude || 0);
+
         let alerts = [];
 
-        // 警告邏輯
+        // 超速邏輯 (10k呎限速 250kt)
+        let legalVmo = (realAlt < 10000) ? 251 : 251 + ((realAlt - 10000) / 1000) * 10;
+        let aircraftVmo = (v.VNO > 0) ? v.VNO : 350;
+        let finalVmo = Math.min(legalVmo, aircraftVmo);
+        if (v.kias > finalVmo) { alerts.push({t: "OVERSPEED", c: "red-alert"}); play('OVERSPEED'); } else { stop('OVERSPEED'); }
+
+        // 其他警告
         if (v.groundContact != 1 && ac.stalling) { alerts.push({t: "STALL", c: "red-alert"}); play('STALL'); } else { stop('STALL'); }
         if (Math.abs(v.aroll || 0) > 40) { alerts.push({t: "BANK ANGLE", c: "red-alert"}); play('BANK_ANGLE'); } else { stop('BANK_ANGLE'); }
         if (v.verticalSpeed < -2500) { alerts.push({t: "SINK RATE", c: "red-alert"}); play('SINK'); } else { stop('SINK'); }
         if (v.gearPosition == 1 && alt <= 1000 && v.groundContact != 1) { alerts.push({t: "PULL UP", c: "red-alert"}); play('PULL_UP'); } else { stop('PULL_UP'); }
 
-        // 配置警告
         if (v.verticalSpeed < -50 && alt <= 1500) {
             if (v.gearPosition == 1) { alerts.push({t: "TOO LOW GEAR", c: "red-alert"}); play('GEAR'); }
             else if ((v.flapsValue || 0) == 0) { alerts.push({t: "TOO LOW FLAPS", c: "red-alert"}); play('FLAPS'); }
             else { stop('GEAR'); stop('FLAPS'); }
         } else { stop('GEAR'); stop('FLAPS'); }
 
-        let vmo = (v.VNO > 0) ? v.VNO + 1 : 350;
-        if (v.kias > vmo) { alerts.push({t: "OVERSPEED", c: "red-alert"}); play('OVERSPEED'); } else { stop('OVERSPEED'); }
-
         if (apWasOn && !window.geofs.autopilot?.on) play('AP_OFF');
         apWasOn = window.geofs.autopilot?.on;
 
-        // 高度呼叫 (補齊 APR MINI / MINI)
+        // 高度語音
         if (v.verticalSpeed < -50) {
-            const levels = { 2500:"2500", 1000:"1000", 500:"500", 400:"400", 350:"APR_MINI", 300:"300", 200:"200", 150:"MINI", 100:"100", 50:"50", 40:"40", 30:"30", 20:"20", 10:"10" };
-            Object.keys(levels).forEach(l => { if (oldAltitude > l && alt <= l) play(levels[l]); });
+            const lvls = { 2500:"2500", 1000:"1000", 500:"500", 400:"400", 350:"APR_MINI", 300:"300", 200:"200", 150:"MINI", 100:"100", 50:"50", 40:"40", 30:"30", 20:"20", 10:"10" };
+            Object.keys(lvls).forEach(l => { if (oldAltitude > l && alt <= l) play(lvls[l]); });
             if (oldAltitude > 20 && alt <= 20 && (v.throttle > 0.05)) play('RETARD');
         }
 
-        // V速度與 AoA 處理
-        const ias = Math.round(v.kias || 0), fVal = v.flapsValue || 0;
-        const v1 = Math.round(160 - (fVal * 15)), vr = Math.round(168 - (fVal * 10));
+        // 數值渲染修正
+        const ias = Math.max(0, Math.round(v.kias || 0));
+        const fVal = v.flapsValue || 0;
+        const v1 = Math.round(158 - (fVal * 15)), vr = Math.round(165 - (fVal * 10));
 
-        // [關鍵修正]：若接地，AoA 強制顯示 0.0
-        const displayAoA = (v.groundContact == 1) ? "0.0" : (v.aoa || 0).toFixed(1);
+        // AoA 接地歸零且防負
+        const displayAoA = (v.groundContact == 1 || v.aoa < 0) ? "0.0" : (v.aoa || 0).toFixed(1);
 
         if (v.groundContact == 1 && v.throttle > 0.6) {
             if (ias >= v1 && !callFlags.v1) { play('V1'); callFlags.v1 = true; }
             if (ias >= vr && !callFlags.vr) { play('VR'); callFlags.vr = true; }
         } else if (v.groundContact == 1 && ias < 30) { callFlags = {v1:false, vr:false}; }
 
-        // --- UI 渲染 ---
         dataPanel.innerHTML = `<b>FLIGHT MONITOR</b><hr style="border:0.5px solid #0F0;margin:4px 0;">
             SPD: ${ias} KT | THR: ${Math.round((v.throttle||0)*100)}%<br>
             ALT: ${Math.round(alt)} FT | VS: ${Math.round(v.verticalSpeed || 0)}<br>
-            <span class="v-speed">V1: ${v1}</span> | <span class="v-speed">VR: ${vr}</span><br>
+            <span style="color:#5AF;font-weight:bold;">V1: ${v1}</span> | <span style="color:#5AF;font-weight:bold;">VR: ${vr}</span><br>
             FLP: ${(fVal*100).toFixed(0)}% | AoA: ${displayAoA}°<br>
             BNK: ${(v.aroll||0).toFixed(1)}° | AP: ${window.geofs.autopilot?.on?"<span style='color:#5AF'>ON</span>":"OFF"}`;
         alertPanel.innerHTML = alerts.length ? alerts.map(a => `<div class="${a.c}">${a.t}</div>`).join('') : '<div style="opacity:0.3;text-align:center;">SYSTEM SAFE</div>';
