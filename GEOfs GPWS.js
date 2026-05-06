@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         GeoFS Ultimate HUD & PFD (Integrated V12.0)
+// @name         GeoFS Ultimate HUD & PFD (Stable V12.3)
 // @namespace    https://github.com/weixiaoSmile2026/geofs-sounds
-// @version      12.0
-// @description  整合 PFD 陀螺儀、動態下沉率警告、全功能 GPWS 與控制按鈕
+// @version      12.3
+// @description  整合 PFD 陀螺儀、修正音效同步與進場誤報問題
 // @author       User & Gemini AI
 // @match        https://www.geo-fs.com/geofs.php*
 // @grant        none
@@ -29,9 +29,13 @@
 
     const audioCtx = {};
     let isMuted = false, callFlags = { v1: false, vr: false }, oldAltitude = 0, apWasOn = false;
+
+    // 定義循環音效清單，用於強制同步
+    const LOOP_SOUNDS = ["STALL", "OVERSPEED", "BANK_ANGLE", "SINK", "GEAR", "FLAPS", "PULL_UP"];
+
     Object.keys(SOUND_FILES).forEach(k => {
         audioCtx[k] = new Audio(RAW_BASE + SOUND_FILES[k]);
-        if (["STALL", "OVERSPEED", "BANK_ANGLE", "SINK", "GEAR", "FLAPS", "PULL_UP"].includes(k)) audioCtx[k].loop = true;
+        if (LOOP_SOUNDS.includes(k)) audioCtx[k].loop = true;
     });
 
     function play(k) { if (!isMuted && audioCtx[k]?.paused) audioCtx[k].play().catch(()=>{}); }
@@ -50,24 +54,18 @@
             .h-btn { background: #222; color: #5AF; border: 1px solid #5AF; padding: 5px; cursor: pointer; font-size: 11px; font-weight: bold; border-radius: 4px; text-align: center; }
             .red-alert { background: #D00; color: #FFF; animation: blink 0.3s infinite; text-align:center; font-weight:bold; padding:5px; margin:3px 0; border-radius:4px; font-size:14px; }
             @keyframes blink { 0%{opacity:1} 50%{opacity:0.4} 100%{opacity:1} }
-
-            /* PFD 樣式 */
             #pfd-gyro-wrapper { position: absolute; top: 160px; right: 40px; width: 150px; height: 150px; z-index: 10000; cursor: move; filter: drop-shadow(0 0 5px black); display: block; }
             .pitch-line-major { stroke: #FFFFFF; stroke-width: 2.5; }
-            .pitch-line-minor { stroke: rgba(255,255,255,0.7); stroke-width: 1.2; }
             .pitch-text { fill: #FFFFFF; font-size: 11px; font-family: Arial; font-weight: 900; filter: drop-shadow(1px 1px 1px black); }
             .bank-tick-bold { stroke: #FFFFFF; stroke-width: 3; }
-            .bank-tick-thin { stroke: rgba(255,255,255,0.6); stroke-width: 1.5; }
             .external-ring { fill: rgba(0, 0, 0, 0.75); stroke: rgba(255,255,255,0.3); stroke-width: 1; }
             .ref-line-glow { stroke: #FFFFFF; stroke-width: 4; filter: drop-shadow(0px 0px 1.5px #000); }
         `;
         const s = document.createElement('style'); s.innerHTML = css; document.head.appendChild(s);
 
-        // 建立 HUD 面板
         dataPanel = document.createElement('div'); dataPanel.className = 'h-panel'; dataPanel.style.top = '160px'; dataPanel.style.left = '20px'; document.body.appendChild(dataPanel);
         alertPanel = document.createElement('div'); alertPanel.className = 'h-panel'; alertPanel.style.top = '360px'; alertPanel.style.left = '20px'; alertPanel.style.minWidth = '200px'; document.body.appendChild(alertPanel);
 
-        // 建立 PFD 儀表
         pfdWrapper = document.createElement('div');
         pfdWrapper.id = 'pfd-gyro-wrapper';
         pfdWrapper.innerHTML = `
@@ -82,36 +80,26 @@
                         <g id="pfd-ladder-content"></g>
                     </g>
                 </g>
-                <g id="roll-scale-static">
-                    ${[0, 30, 60, -30, -60].map(deg => `<line x1="100" y1="5" x2="100" y2="25" class="bank-tick-bold" transform="rotate(${deg}, 100, 100)" />`).join('')}
-                    ${[10, 20, -10, -20].map(deg => `<line x1="100" y1="5" x2="100" y2="18" class="bank-tick-thin" transform="rotate(${deg}, 100, 100)" />`).join('')}
-                </g>
                 <g>
                     <path id="roll-pointer" d="M100,28 L110,45 L92,45 Z" fill="#FFFFFF" stroke="#000000" stroke-width="2" />
                     <line x1="25" y1="100" x2="65" y2="100" class="ref-line-glow" />
                     <line x1="135" y1="100" x2="175" y2="100" class="ref-line-glow" />
-                    <path d="M65,100 L90,100 L90,110 M110,110 L110,100 L135,100" stroke="#FFD700" stroke-width="6" fill="none" stroke-linejoin="round" style="filter: drop-shadow(0px 0px 2px #000);" />
+                    <path d="M65,100 L90,100 L90,110 M110,110 L110,100 L135,100" stroke="#FFD700" stroke-width="6" fill="none" stroke-linejoin="round" />
                     <circle cx="100" cy="100" r="4" fill="#FF0000" stroke="#000000" stroke-width="1.5" />
                 </g>
             </svg>`;
         document.body.appendChild(pfdWrapper);
 
-        // 生成 PFD 刻度
         const ladder = document.getElementById('pfd-ladder-content');
-        for (let i = -180; i <= 180; i += 5) {
+        for (let i = -180; i <= 180; i += 10) {
             if (i === 0) continue;
             const y = 100 - (i * PITCH_SPACING);
-            let displayVal = Math.abs(i);
-            if (displayVal > 90) displayVal = 180 - displayVal;
-            if (i % 10 === 0) {
-                ladder.insertAdjacentHTML('beforeend', `<line x1="82" y1="${y}" x2="118" y2="${y}" class="pitch-line-major" /><text x="78" y="${y+4}" class="pitch-text" text-anchor="end">${Math.round(displayVal)}</text><text x="122" y="${y+4}" class="pitch-text" text-anchor="start">${Math.round(displayVal)}</text>`);
-            } else { ladder.insertAdjacentHTML('beforeend', `<line x1="92" y1="${y}" x2="108" y2="${y}" class="pitch-line-minor" />`); }
+            ladder.insertAdjacentHTML('beforeend', `<line x1="82" y1="${y}" x2="118" y2="${y}" class="pitch-line-major" /><text x="78" y="${y+4}" class="pitch-text" text-anchor="end">${Math.abs(i)}</text>`);
         }
 
         aiBall = document.getElementById('pfd-dynamic-group');
         rollPointer = document.getElementById('roll-pointer');
 
-        // 控制面板
         const ctrl = document.createElement('div'); ctrl.className = 'h-ctrl';
         ctrl.innerHTML = `
             <button id="b1" class="h-btn">DATA HUD</button>
@@ -120,17 +108,14 @@
             <button id="bm" class="h-btn">MUTE OFF</button>`;
         document.body.appendChild(ctrl);
 
-        // 按鈕邏輯
         document.getElementById('b1').onclick = () => dataPanel.style.display = (dataPanel.style.display==='none'?'block':'none');
         document.getElementById('b2').onclick = () => alertPanel.style.display = (alertPanel.style.display==='none'?'block':'none');
         document.getElementById('b3').onclick = () => pfdWrapper.style.display = (pfdWrapper.style.display==='none'?'block':'none');
         document.getElementById('bm').onclick = function() {
             isMuted = !isMuted; this.innerText = isMuted ? "MUTE ON" : "MUTE OFF";
-            this.style.color = isMuted ? "#F55" : "#5AF";
             if (isMuted) Object.keys(audioCtx).forEach(stop);
         };
 
-        // 拖曳功能
         [dataPanel, alertPanel, ctrl, pfdWrapper].forEach(p => {
             p.onmousedown = (e) => {
                 if (e.target.tagName === 'BUTTON') return;
@@ -145,46 +130,56 @@
         if (!window.geofs?.animation?.values || window.geofs.isPaused()) return;
         const v = getV(), ac = getAC();
 
-        let rawAlt = (v.altitude || 0) - (v.groundElevationFeet || 0) - 50;
-        const alt = Math.max(0, rawAlt);
-        const realAlt = Math.max(0, v.altitude || 0);
+        let alt = Math.max(0, (v.altitude || 0) - (v.groundElevationFeet || 0) - 50);
         const vs = v.verticalSpeed || 0;
-        const ias = Math.max(0, Math.round(v.kias || 0));
+        const ias = Math.round(v.kias || 0);
         const roll = v.aroll || 0;
-        const pitch = -(v.atilt || v.pitch || 0); // 抬頭為正
+        const pitch = -(v.atilt || 0);
 
-        let alerts = [];
+        let activeAlerts = []; // 儲存當前正在觸發的警告 Key
 
-        // 1. 動態下沉率 GPWS
+        // 1. 下沉率判斷
         let sinkThreshold = (alt < 1000) ? -1500 : (alt < 2500 ? -2500 : -4000);
         if (vs < sinkThreshold && v.groundContact != 1) {
-            if (alt < 500 && vs < -3000) { alerts.push({t: "PULL UP", c: "red-alert"}); play('PULL_UP'); stop('SINK'); }
-            else { alerts.push({t: "SINK RATE", c: "red-alert"}); play('SINK'); }
-        } else { stop('SINK'); }
+            if (alt < 500 && vs < -3000) activeAlerts.push("PULL_UP");
+            else activeAlerts.push("SINK");
+        }
 
         // 2. 超速與失速
-        let legalVmo = (realAlt < 10000) ? 251 : 251 + ((realAlt - 10000) / 1000) * 10;
-        let aircraftVmo = (v.VNO > 0) ? v.VNO : 350;
-        let finalVmo = Math.min(legalVmo, aircraftVmo);
-        if (ias > finalVmo) { alerts.push({t: "OVERSPEED", c: "red-alert"}); play('OVERSPEED'); } else { stop('OVERSPEED'); }
-        if (v.groundContact != 1 && ac.stalling) { alerts.push({t: "STALL", c: "red-alert"}); play('STALL'); } else { stop('STALL'); }
+        if (ias > ((alt < 10000) ? 255 : 360)) activeAlerts.push("OVERSPEED");
+        if (v.groundContact != 1 && ac.stalling) activeAlerts.push("STALL");
 
-        // 3. 坡度警告 (超過45度)
-        if (Math.abs(roll) > 45) { alerts.push({t: "BANK ANGLE", c: "red-alert"}); play('BANK_ANGLE'); } else { stop('BANK_ANGLE'); }
+        // 3. 坡度
+        if (Math.abs(roll) > 45) activeAlerts.push("BANK_ANGLE");
 
-        // 4. 起落架/襟翼警告
-        if (vs < -50 && alt <= 1500) {
-            if (v.gearPosition == 1) { alerts.push({t: "TOO LOW GEAR", c: "red-alert"}); play('GEAR'); }
-            else if ((v.flapsValue || 0) == 0) { alerts.push({t: "TOO LOW FLAPS", c: "red-alert"}); play('FLAPS'); }
-        } else { stop('GEAR'); stop('FLAPS'); }
+        // 4. 起落架/襟翼 (修正誤報)
+        if (vs < -200 && alt < 1000 && v.groundContact != 1) {
+            if (v.gearPosition > 0.5) activeAlerts.push("GEAR");
+            if (alt < 500 && (v.flapsValue || 0) < 0.1) activeAlerts.push("FLAPS");
+        }
 
-        // 5. 自動駕駛與語音
+        // --- 強制同步邏輯 ---
+        // 停止沒在清單中的循環音效
+        LOOP_SOUNDS.forEach(k => { if (!activeAlerts.includes(k)) stop(k); });
+
+        // 播放並渲染清單中的內容
+        let alertsHTML = "";
+        activeAlerts.forEach(k => {
+            play(k);
+            let label = k.replace("_", " ");
+            if (k === "SINK") label = "SINK RATE";
+            if (k === "GEAR") label = "TOO LOW GEAR";
+            if (k === "FLAPS") label = "TOO LOW FLAPS";
+            alertsHTML += `<div class="red-alert">${label}</div>`;
+        });
+
+        // 5. 自動駕駛與語音呼叫
         if (apWasOn && !window.geofs.autopilot?.on) play('AP_OFF');
         apWasOn = window.geofs.autopilot?.on;
         if (vs < -50) {
-            const lvls = { 2500:"2500", 1000:"1000", 500:"500", 400:"400", 350:"APR_MINI", 300:"300", 200:"200", 150:"MINI", 100:"100", 50:"50", 40:"40", 30:"30", 20:"20", 10:"10" };
+            const lvls = { 2500:"2500", 1000:"1000", 500:"500", 400:"400", 300:"300", 200:"200", 100:"100", 50:"50", 40:"40", 30:"30", 20:"20", 10:"10" };
             Object.keys(lvls).forEach(l => { if (oldAltitude > l && alt <= l) play(lvls[l]); });
-            if (oldAltitude > 20 && alt <= 20 && v.throttle > 0.05) play('RETARD');
+            if (oldAltitude > 20 && alt <= 20 && v.throttle > 0.1) play('RETARD');
         }
 
         // --- PFD 動態更新 ---
@@ -194,24 +189,14 @@
         }
 
         // --- HUD 數據渲染 ---
-        const fVal = v.flapsValue || 0;
-        const v1 = Math.round(158 - (fVal * 15)), vr = Math.round(165 - (fVal * 10));
-        const pitchColor = Math.abs(pitch) > 20 ? "#F55; font-weight:bold;" : "#0F0";
-
-        if (v.groundContact == 1 && v.throttle > 0.6) {
-            if (ias >= v1 && !callFlags.v1) { play('V1'); callFlags.v1 = true; }
-            if (ias >= vr && !callFlags.vr) { play('VR'); callFlags.vr = true; }
-        } else if (v.groundContact == 1 && ias < 30) { callFlags = {v1:false, vr:false}; }
-
         dataPanel.innerHTML = `<b>FLIGHT MONITOR</b><hr style="border:0.5px solid #0F0;margin:4px 0;">
-            SPD: ${ias} KT | THR: ${Math.round((v.throttle||0)*100)}%<br>
-            ALT: ${Math.round(alt)} FT | VS: ${Math.round(vs)}<br>
-            <span style="color:#5AF;font-weight:bold;">V1: ${v1}</span> | <span style="color:#5AF;font-weight:bold;">VR: ${vr}</span><br>
-            FLP: ${(fVal*100).toFixed(0)}% | AoA: ${(v.groundContact==1||v.aoa<0?"0.0":(v.aoa||0).toFixed(1))}°<br>
-            PIT: <span style="color:${pitchColor}">${pitch.toFixed(1)}°</span> | BNK: ${roll.toFixed(1)}°<br>
+            SPD: ${ias} KT | ALT: ${Math.round(alt)} FT<br>
+            VS: ${Math.round(vs)} FPM | THR: ${Math.round(v.throttle*100)}%<br>
+            PIT: ${pitch.toFixed(1)}° | BNK: ${roll.toFixed(1)}°<br>
+            FLP: ${((v.flapsValue||0)*100).toFixed(0)}% | GEAR: ${v.gearPosition<0.5?"DOWN":"UP"}<br>
             AP: ${window.geofs.autopilot?.on?"<span style='color:#5AF'>ON</span>":"OFF"}`;
 
-        alertPanel.innerHTML = alerts.length ? alerts.map(a => `<div class="${a.c}">${a.t}</div>`).join('') : '<div style="opacity:0.3;text-align:center;">SYSTEM SAFE</div>';
+        alertPanel.innerHTML = alertsHTML || '<div style="opacity:0.3;text-align:center;">SYSTEM SAFE</div>';
         oldAltitude = alt;
     }
 
